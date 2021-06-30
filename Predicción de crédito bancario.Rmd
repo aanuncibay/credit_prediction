@@ -1,0 +1,1291 @@
+---
+title: "Caso practico del modulo Modelos y Aprendizaje Estadistico usando R"
+author: "Antonio Anuncibay Zapata"
+date: "20 de agosto de 2020"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+**Caso Pŕactico Final**
+
+Dataset de aprobación de crédito bancario
+
+**Actividades a realizar**
+
+1. Carga los datos. Realiza una inspección por variables de la distribución de aprobación de crédito en función de cada atributo visualmente. 
+Realiza las observaciones pertinentes. ¿Cuáles variables son mejores para separar los datos?
+
+2. Prepara el dataset convenientemente e imputa los valores faltantes usando la librería missForest
+
+3. Divide el dataset tomando las primeras 589 instancias como train y las últimas 100 como test.
+
+4. Entrena un modelo de regresión logística con regularización Ridge y Lasso en train seleccionando el que mejor AUC tenga. 
+Da las métricas en test.
+
+5. Aporta los log odds de las variables predictoras sobre la variable objetivo.
+
+6. Si por cada verdadero positivo ganamos 100 euros y por cada falso positivo perdemos 20 euros: 
+¿Qué valor monetario generará el modelo teniendo en cuenta la matriz de confusión del modelo con mayor AUC 
+(con las métricas en test)?
+
+# 1. Pasos iniciales
+
+## 1.1 Llamado de librerías
+
+```{r}
+
+#install.packages("tidyverse") 
+#install.packages('gridExtra')
+#install.packages("missForest")
+#install.packages("kableExtra")
+#install.package("e1071")
+#install.packages("glmnet")
+#install.packages("caret")
+#install.packages("MASS")
+# install.packages("VIM")
+
+library(MASS) #librería de estadística aplicada
+library(glmnet) #librería relacionada con los modelos de regresión 
+library(caret) #librería de apoyo de los modelos de regresion
+library(e1071) #paquete para el cálculo de la curtosis
+library(kableExtra) #paquete para el formato de tablas 
+library(missForest) #libreria para imputación de datos en caso particular de data mixta
+library(VIM) ##librería para graficar los valores perdidos
+library(gridExtra) #librería necesaria para la presentación de los gráficos en conjunto
+
+library(tidyverse) #Instalación de librería "tidyverse", esta es un compendio de librerías
+                   ## que permite la manipulación básica de datos, gráficos o concatenación
+                   ## de líneas de código, entre otras funciones.
+
+```
+
+
+## 1.2. Dataset
+
+Siguiendo los puntos del enunciado, comenzamos con el **primer punto**: **Carga los datos. Realiza una inspección por variables de la distribución de aprobación de crédito en función de cada atributo visualmente. Realiza las observaciones pertinentes. ¿Cuáles variables son mejores para separar los datos?**
+
+```{r}
+
+#Selección de la carpeta de almacenamiento
+
+#setwd("C:/Users/aanun/OneDrive/Documentos/MasterIMF/Modulo_2/CP_Final")
+
+#Carga de dataset a "df"
+df <- read.csv("crx.data")
+
+#Comprobación de la carga correcta de los datos
+head(df)
+
+```
+
+```{r}
+
+#Visualización de diferentes aspectos del dataset
+
+#Vista completa en formato de tabla que se abrirá en otra pestaña con formato 
+## estructurado, esto permite visualizar mejor los datos.
+
+view(df)
+
+```
+
+```{r}
+
+#Listado de variables: tipo, vistado de contenido y cantidad de observaciones y variables. 
+str(df)
+
+```
+
+```{r}
+
+#Resumen del contenido de datos de las variables
+summary(df)
+
+```
+
+**Nota:**
+
+* El dataset **crx.data** cargado en el dataframe **df** contiene 16 variables y 
+689 registros, de las cuales once son de tipo **character** y cuatro de contenido 
+numérico entre **integer** y **numeric**. 
+
+* La variable **X00202** aunque tiene contenido numérico, su formato puede no ser 
+compatible con su tipo.
+
+* La variable objetivo (X.) tiene niveles **+** y **-** para **aprobado** y 
+**no aprobado** para su posterior uso en la Regresión Logística la cual se trata 
+de una clasificación entre **0** y **1**.
+
+* EL siguiente paso es comenzar el procedimiento de procesamiento 
+de las variables y realizar nuevamente una evaluación. 
+
+* Las variables parecen tener presencia de datos atípicos, por ejemplo la variable 
+**X0.1** presenta un valor mínimo de **0** y un máximo de **100000** con una 
+media de 1019.
+
+# 2. Preprocesamiento
+## 2.1. Cambio de nombres de las variables
+
+```{r}
+
+#Se usa la función "paste0" para crear un vector con los nombres de las primeras 
+## quince variables. Esta función concadena carácteres usando la función "as.character"
+
+nombres_variables <- paste0("var_", 1:15, collapse = NULL)
+
+#Asignación de nombre a la variable objetivo 
+
+nombres_variables[16] <- "var_Obj" 
+
+#Cambio de nombres de las variables a través de la función "name"
+
+names(df) <- nombres_variables
+
+#Se comprueba el cambio
+
+str(df)
+
+```
+
+## 2.2. Transformación de variables cualitativas y cuantitativas
+
+```{r}
+
+#Visualización de valores únicos en cada variable.
+#Esto lo realizamos aplicando a cada columna un función que cuente 
+## cada valor que no se repita. La intención sería conocer
+## cuáles son más compatibles con variables cualitativas al conocer
+## cuántos niveles puede tener (a partir de valores únicos) y su tipo
+## "character". Las variables cuantitativas parecen ser sencillas 
+## de identificar a partir de su tipo númerico.
+
+sapply(df, function(df) length(unique(df)))
+
+```
+
+**Nota:**
+
+Vemos como la variable **var_1** solo tiene tres valores únicos a diferencia de la
+**var_14** con tiene más de ciento cincuenta. 
+
+Procedemos a cambiar las varibales **var_1**, **var_4**,  **var_5**, **var_6**, 
+**var_7**, **var_9**, **var_10**, **var_12**, **var_13**. 
+La var_14 tendrá un estudio diferente debido a su cantidad de niveles y tipo.
+
+```{r}
+
+#Usamos "map" para aplicar a cada variable una función en cadena.
+#"map" aplica una función a cada objeto dentro de un vector o lista.
+
+#Categóricas:
+##La selección de estas variables para asignarles el tipo "factor" se hace
+## a partir de la cantidad de niveles y su contenido o tipo, "character".
+
+df[c("var_1", "var_4",  "var_5", "var_6", "var_7", 
+     "var_9", "var_10", "var_12", "var_13")] <- map(df[c("var_1",  
+                                                         "var_4",  "var_5", "var_6", "var_7", "var_9", 
+                                                         "var_10", "var_12", "var_13")], ~as.factor(.x))
+#Numerales:
+##Aunque ya hay variables con el tipo "integer" dentro de
+## de estas variables, se les asigna el tipo "numeric" como buena práctica
+## en el momento de su visualización y posible inclusión en el modelo
+
+df[c("var_2", "var_3", "var_8",  
+     "var_11", "var_15")] <- map(df[c("var_2", "var_3", "var_8",  "var_11", "var_15")], ~as.numeric(.x))
+
+```
+
+## 2.3. Variable objetivo
+
+```{r}
+
+#Cambio de niveles a "1" al nivel "-" y "0" al nivel "+" y tipo de variable. 
+#Esto se hace renombrando sus niveles. 
+
+df$var_Obj <- factor(df$var_Obj,
+                        levels = c("+", "-"),
+                        labels = c("0", "1"))
+
+```
+
+```{r}
+
+#Resumen rápido de contenido
+str(df)
+
+```
+
+## 2.4. var_14
+
+Esta variable tiene una configuración que puede afectar el correcto desarrollo 
+del modelo; por tanto, procedemos a estudiarla en esta etapa de procesamiento, 
+antes del EDA.
+
+```{r}
+
+##Impresión de tabla. 
+
+view(df$var_14)
+
+```
+
+```{r}
+
+summary(df$var_14)
+
+```
+
+```{r}
+
+table(df$var_14)
+
+```
+
+**Nota:**
+
+Esta variable tiene un tipo **character** con 689 observaciones.
+
+Los datos tienen un formato de cinco unidades precedidos de **0**; una
+transformación a un tipo numeral afectaría su contenido ya que cambiaría de 
+"00171" a "171" y le otorgaría un peso numérico al modelo que realmente parece 
+no aportar.
+
+Los diferentes números parecen indicar orden; entonces, estaría más relacionada 
+a una variable cualitativa ordinal. 
+
+```{r}
+
+#Se crea una variable provisional de tipo factor.
+
+provisional = as.factor(df$var_14) 
+str(provisional)
+
+```
+
+**Nota:**
+
+Al cambiar el tipo de varibale obtendremos 170 niveles para 689 observaciones. 
+Se pudiere proceder a discretizar con la función dummy; 
+sin embargo, se agregarían 170 variables nuevas a nuestro modelo. 
+
+No se puede asegurar que esta variable determine orden o asigna un valor categórico 
+como un código postal o número de identificación del dataframe, ni un valor cuantitativo.
+
+### Conclusión
+
+Se decide eliminar la **var_14** porque su inclusión más allá de aportar valor, 
+parecería que generará ruido en la clasifición final.
+
+```{r}
+#eliminamos la variable "var_14"
+
+df <- df %>% 
+    select(-contains("var_14"))
+
+str(df)
+
+```
+
+```{r}
+
+#Resumen del contenido de datos de las variables
+summary(df)
+
+```
+
+**Nota:**
+
+Algunas variables presentan valores perdidos, además del símbolo **?** para señalarlos. 
+Esto complica la lectura de los datos, se procede a cambiar el valor por defecto de **R** para luego 
+proceder a completar el dataframe.
+
+## 2.4. Valores perdidos
+
+### 2.4.1 Normalización de los valores perdidos
+
+```{r}
+
+#Cambio de tipo de representación de valores restantes de "?" a NA que es la manera en que R procesa los datos inexistentes.
+
+df <- df %>%
+  na_if("?")
+
+#Eliminar el nivel "?" 
+
+df[c("var_1", "var_4", "var_5", "var_6", "var_7")] <- map(df[c("var_1", 
+                                 "var_4", "var_5", "var_6", "var_7")], ~fct_drop(.x, "?"))
+
+summary(df)
+
+```
+
+**Nota:**
+
+Las variables **var_1**, **var_2**, **var_4**, **var_5**, **var_6** y **var_7** presentan valores perdidos 
+en diferentes proporciones. Procedemos a conocer el porcentaje de estos valores. 
+
+```{r}
+
+#Se separan las variables y se conocen el porcentaje de valores perdidos 
+## con la función "is.na"
+
+round(colSums(is.na(df)) /nrow(df) * 100, 2)
+
+```
+
+```{r}
+#Usamos la función "aggr" para ver el patrón de los valores perdidos
+
+aggr(df, col = c("skyblue", "red"), prop=FALSE, numbers=TRUE, cex.numbers=2, 
+     cex.axis=0.6, sortVars=FALSE, ylab = c("NA histogram", "Patrón"), combined = TRUE)
+
+```
+
+**Nota:** 
+
+Vemos que en algunas filas de registro hay hasta cuatro variables en donde 
+coinciden, probablemente se podría considerar en otro escenario eliminar 
+estos registros en lugar de imputarlos; ya que podrían generar data no consistente 
+en diferentes observaciones.
+
+También, hay poca cantidad de valores perdidos en cada variable. El mayor porcentaje 
+de **1.74 %**, por tanto, se procede a imputar con la librería **MissForest**
+sin considerar ninguna otra opción.
+
+### 2.4.2 Imputación de valores perdidos
+
+Se usa la Libreria MissForest como se indica en los requerimientos del caso en el **segundo** punto: 
+**Prepara el dataset convenientemente e imputa los valores faltantes usando la librería missForest**.
+
+```{r}
+
+#Ordenamos un nuevo dataframe en relación a los valores perdidos
+#Almacenamos en un nuevo dataframe
+
+df_na <- df %>% 
+      arrange(desc((is.na(.)))) 
+
+head(df_na)
+
+view(df_na)
+
+```
+
+
+```{r, warning = FALSE}
+
+set.seed(1) #se usa set.seed en caso de querer replicar este ejercicio 
+
+df_imp <- missForest(df_na, xtrue = NA) #usamos los valores por defecto de la librería. 
+
+df <- df_imp$ximp #cargamos muevamente el dataset con los valores extraídos con 
+                  ## $ximp; de lo contrario solo pasaríamos una variable encapsulada de clase "missForest"
+
+head(df) #vemos los primeros cinco filas del dataframe y comparamos la imputación
+
+##fuente: https://stat.ethz.ch/education/semesters/ss2012/ams/paper/missForest_1.2.pdf
+```
+
+```{r}
+
+#comprobamos que no haya ningún valor perdido
+
+round(colSums(is.na(df)) /nrow(df)*100, 2)
+
+```
+
+# 3. EDA
+
+```{r}
+
+# Creación de listas de variables cualitativas y cuantitativas
+
+#Se separan las variables en dos categorías según su tipo para tener acceso a ellas en 
+## grupos distintivos
+
+cat <- c("var_1", "var_4",  "var_5", "var_6", "var_7", "var_9", "var_10", "var_12", "var_13")
+
+num <- c("var_2", "var_3", "var_8", "var_11", "var_15")
+
+```
+
+## 3.1. Cualitativas
+
+### 3.1.1. Conteo de frecuencias
+
+```{r}
+
+#Creación de una función para crear los gráficos de 
+## todas las variables cuantitativas.
+
+#El conteo se mostrará en proporción.
+
+graficas_cuantitativas <- function(titulo, dataset)
+  {
+ var <- dataset[,titulo]
+ ggplot(dataset, aes(x = var, fill= ..prop..), color = "blue") + 
+    geom_bar() +
+    geom_text(aes(x= var, label=scales::percent(..prop..), group = 0), stat ="count") +
+    theme(legend.position="None") + labs(title="Frecuencia de los datos", subtitle="representación en porcentaje", 
+         y="Frecuencia", x = titulo, caption="Caso Práctico: Aprobación de Crédito")
+}
+
+#Llamado de la función y almacenamiento en un vector 
+## para proceder luego a su impresión
+
+ls_graf_cuant <- map(names(df[cat]), ~graficas_cuantitativas(.x, df[cat])) 
+
+#Arreglo de las graficas para presentar en pantallas
+ls_graf_cuant
+
+
+```
+
+* Se ve desbalanceo en la frecuencia de los datos atendiendo a los distintos niveles 
+de **var_4**, **var_5**, **var_4**, **var_7** y **var_13**.
+
+* La **var_6** muestra un mayor porcentaje en el nivel **c**, el resto tiene 
+una frecuencia mejor distribuida entre los diferentes niveles.
+
+* Las variables **var_9**, **var_10** y **var_12** presentan una variabilidad más uniforme entre sí 
+y entre sus dos niveles.
+
+### 3.1.2.  Variables cualitativas contra Variable Objetivo
+
+```{r}
+
+graficas_cuant_Obj <- function(titulo, dataset, var_Obj)
+  {
+  var <- dataset[,titulo]
+  ggplot(dataset, mapping = aes(x = var, fill = var_Obj), group=1) + 
+  geom_bar() + facet_grid(var_Obj) + 
+  geom_text(aes(x= var, label = scales::percent(..prop..), group=1), stat="count")  + 
+  labs(title="Relación de las variables contra la variable objetivo", subtitle="representación en porcentaje", 
+                     y="Frecuencia", x = titulo, caption="Caso Práctico: Aprobación de Crédito")
+}
+
+ls_graficos_obj <- map(names(df[cat]), ~graficas_cuant_Obj(.x, df[cat], df$var_Obj))
+
+ls_graficos_obj
+
+```
+
+**Notas:** 
+
+* Se puede apreciar como algunas variables parecen tener mejor relación con la variable objetivo, 
+mostrando una cierta causalidad entre los niveles.
+
+* Las variables **var_1**, **var_9**, **var_10** es donde parece haber una mayor 
+dependencia entre la frecuencia de los niveles y la variabilidad de la variable objetivo. 
+
+* Se procede a conocer estadísticamente cuál es la incidencia de las variables sobre el objetivo y conocer así 
+la posibilidad de dependencia entre ellas.
+
+### 3.1.3. Test de Chi Cuadrado de Independencia
+
+Necesitamos saber qué tan importante o qué siginifica esta posible relación entre estas variables.
+Usamos el Test de Chi Test de Chi Cuadrado de independencia ya que estamos hablando de conocer 
+la relación entre variables categóricas y este es el test adecuado.
+
+```{r, warning=FALSE}
+
+#Se calcula el Test de Chi Cuadrado de independencia entre las variables categóricas y la variable objetivo. 
+#El contraste de hipótesis sería el siguiente: 
+
+#  * H1 dependencia entre las variables
+#  * H0 independencia entre variables 
+
+sapply(df[cat], function(x) chisq.test(table(x, df$var_Obj))$p.value)
+
+```
+
+**Notas:**
+
+* La lectura del p-valor se daría entre:
+  a.- No rechazar la hipótesis nula (ser independiente) cuando este valor sea mayor a 0.05
+  b.- Rechazar la hipótesis nula y asumir la alternartiva (ser dependiente), valor menor a 0.05
+  
+* Según los resultados no se pueden rechazar la hipótesis nula de las variables 
+**var_1**, **var_12** y **var_13**; por tanto, se puede entender que dichas variables
+son independientes respectos a la variable objetivo. 
+
+* El resto de las variable presentan valores muy por debajo 0.05, 
+podemos rechazar la hipotesis nula y asumir la alternativa, 
+entendiéndose una posible dependencia de estas con la variable objetivo.
+
+* Se confirman nuestra evaluación de causalidad en las gráficas de variables 
+cualitativas contra la variable objetivo
+
+## 3.2. Cuantitativas
+
+```{r}
+
+##Creación de una tabla de correlación de variables numéricas
+
+plot(df[num])
+
+```
+
+```{r}
+
+#Creación de funciones para la obtención de 
+## de diferentes gráficos y medidas de las variabales cualitativas
+
+#Para el análisis de las variables cuantitativas se procederá distinto a lo visto con 
+## las variables cualitativas, ya que se construirán gráficos separados que ayuden
+## al análisis de los datos.
+
+#función para estadística descriptiva de las variables.
+med_tabla <- function(var) {
+  medida <- c("Curtosis", "Medida de Asimetría", "Valor Mínimo", "Media", "Mediana", 
+              "Valor Máximo", "Desviación Estándar", "Rango Intercuarlítico")
+  
+  valor <- c(round(kurtosis(var), 3), round(skewness(var), 3), round(min(var), 3), 
+             round(mean(var), 3), round(median(var), 3), round(max(var), 3),
+           round(sd(var), 3),  round(IQR(var), 3))
+  
+  tabla <- data.frame(medida, valor) 
+  
+  t <- tabla %>% 
+    kbl() %>%
+    kable_minimal()
+  
+  return(t)
+}
+
+#función para la creación de gráficas de tipo boxplot
+graf_box <- function(dataset, var, titulo){ 
+    ggplot(df, aes(var)) + geom_boxplot() + 
+    labs(title="Diagrama de caja", 
+         x = titulo,
+         caption="Caso Práctico: Aprobación de Crédito")
+}
+
+#Función para la construcción de historgrama con corte para la media 
+## y la desviación estándar
+hist_cortes <- function(var, titulo){
+  media <- mean(var)
+  des_estandar <- sd(var)
+  hist(var, main = "Histograma con cortes", xlab = titulo, ylab = "Frecuencia", col = "gray")
+  abline(v = media, col = "red")
+  abline(v = media + (des_estandar * c(1,-1)), col = "blue")
+  legend(x = "topright", legend = c("Desviacion Estádar", "Media"), fill = c("blue", "red"), 
+       title = "Leyenda")
+}
+
+#Función para la construcción de histograma con una curva teórica de normalidad.
+## Esta tabla toma los valores de media y dispersión estánr y los superpone 
+## en la gráfica en una curva de normalidad
+gra_cualitativa_curva <- function(dataset, var, titulo){
+  ggplot(data = dataset, aes(x = var)) +
+  geom_histogram(aes(y = ..density.., fill = ..count..)) +
+  scale_fill_gradient(low = "#DCDCDC", high = "#7C7C7C") +
+  stat_function(fun = dnorm, colour = "firebrick",
+                args = list(mean = mean(var),
+                sd = sd(var))) + 
+  labs(title="Histograma con curva normal teórica", 
+       y="Densidad", 
+       x = titulo, 
+       caption="Caso Práctico: Aprobación de Crédito") +
+  theme_bw()
+  ##Fuente: https://rpubs.com/Joaquin_AR/218465
+}
+
+#Función para la construcción de una gráfica comparativa entre 
+## la variable estudiada y la variable objetivo
+
+gra_cualitativa_obj <- function(dataset, var, var_Obj, titulo){
+  ggplot(data = dataset) +
+    geom_boxplot(mapping = aes(y = var)) +
+    facet_wrap(~var_Obj, nrow=1)+ 
+    labs(title="Relación con la variable objetivo",
+       x = titulo,
+       y = "", 
+       caption="Caso Práctico: Aprobación de Crédito")
+}
+
+```
+
+**Nota:** 
+
+Este análisis se hará en dos partes: En primer lugar se imprimirán todos los 
+posibles detalles de la variable y luego en una 
+segunda parte se estudiará con más detenimiento según lo exiga cada situación.
+
+### 3.2.1. var_2
+
+```{r}
+
+graf_box(df, df$var_2, "var_2")
+med_tabla(df$var_2)
+hist_cortes(df$var_2,"var_2")
+gra_cualitativa_curva(df, df$var_2, "var_2")
+
+```
+
+La variable tiene una tendencia de asimetría positiva 
+con una media entre los 20 y 40 (31,58) y una dispersión de datos de casi 12 puntos. 
+
+La curtosis indica una forma leptocurtica, es decir con una mayor concentracion de datos 
+fuera de la región central, sin mostrar uniformidad. 
+
+La distribución de esta variable no es normal, lo cual debemos confirmar 
+con un Test de Shapiro.
+
+A la vez, destacamos como hay una cantidad de valores limites o outliers. 
+
+```{r}
+
+#Test de normalidad
+
+shapiro.test(df$var_2)
+
+```
+
+Vemos como el valor de p es menor a 0.05 lo cual nos permite 
+rechazar la hipotesis nula de normalidad, adoptando o permitiéndonos 
+deducir que la hipótesis alternativa o de investigador es la más indicada
+siendo esta la no normalidad de la variable. 
+
+Asentamos en este apartado cómo procederemos en los siguientes Test de Shapiro
+que se realicen a las otras variables: 
+
+H0 = normalidad 
+H1 (alternativa) = no normalidad 
+
+```{r}
+
+#vemos cuáles valores son considerados atípicos. 
+## Podemos calcularlos nosotros mismos con la formula "Q3 + 1.5 * IQR", 
+## en este caso solo calculamos los límites superiores que nos muestra el 
+## gráfico de caja; si quisieramos conocer los valores inferiores, 
+## usaríamos el primer cuártil y restar 1.5
+
+summary(df$var_2)
+
+#Para el caso de var_2 el límite superior estaría a partir de 60.37
+
+```
+
+```{r}
+
+#confirmamos con la extracción de los valores atípicos:
+
+out <- table(boxplot(df$var_2)$out)
+
+out
+
+```
+
+Confirmamos los valores atípicos y sus frecuencias, así como la cantidad total: 17 
+
+```{r}
+
+#Relación con la variable objetivo
+
+gra_cualitativa_obj(df, df$var_2, df$var_Obj, "var_2")
+
+```
+ 
+Se puede observar que se mantienen más o menos similares las medias entre
+ambos factores, no notándose la dependencia de este variable contra la objetivo, 
+si podemos ver cómo hay más valores atípicos en la no aprobación del crédito.
+
+### 3.2.2. var_3
+
+```{r}
+
+graf_box(df, df$var_3, "var_3")
+med_tabla(df$var_3)
+hist_cortes(df$var_3,"var_3")
+gra_cualitativa_curva(df, df$var_2, "var_3")
+
+```
+
+Notamos de la misma manera como la tendencia de asimetría leptocurtica, 
+con una concentración grande de valores bajos y un mínimo de 0.
+La dispersión es menor que la **var_2**, al estar aquí en menos de 5, 
+pero una diferencia notable entre la medida de asimetría y la curtosis.
+
+Procederemos a extraer los valores limítrofes, a la vez que confirmaremos la 
+no normalidad de la distribución.
+
+```{r}
+
+#Test de normalidad
+
+shapiro.test(df$var_3)
+
+```
+
+El valor de **p** es menor a 0.05 lo cual nos permite 
+rechazar la hipotesis nula de normalidad, adoptando o permitiéndonos 
+deducir que la hipótesis alternativa o de investigador es la más indicada
+siendo esta la no normalidad de la variable.
+
+```{r}
+#vemos cuáles valores son considerados límites. 
+
+summary(df$var_3)
+
+#Para el caso de var_3 el límite superior estaría a partir de 16.625
+
+```
+
+```{r}
+#confirmamos con la extracción de los valores:
+
+out <- table(boxplot(df$var_3)$out)
+
+out
+
+```
+
+Nuevamente notamos que los valores límites rondan la veintena y 
+su frecuencia es baja. 
+
+```{r}
+
+gra_cualitativa_obj(df, df$var_3, df$var_Obj, "var_3")
+
+```
+
+Al igual que la variable **var_2** hay una gran cantidad de valores límites en 
+la no aprobación del crédito que puede afectar la correcta influencia de esta 
+variable sobre la dependiente u objetivo
+
+### 3.2.3. var_8
+
+```{r}
+
+graf_box(df, df$var_8, "var_8")
+med_tabla(df$var_8)
+hist_cortes(df$var_8,"var_8")
+gra_cualitativa_curva(df, df$var_8, "var_8")
+
+```
+
+**var_8** presenta una gran cantidad de valores limítrofes y una concentración 
+de estos por debajo de 5, nos enfocaremos en este punto. 
+
+Además, resaltamos que no hay normalidad en su distribución. 
+
+```{r}
+
+gra_cualitativa_curva(df, df$var_8, "var_8") +
+  coord_cartesian(xlim=c(0, 10))
+
+```
+
+Notamos la no normalidad de la distribución y una proporción mesocurtica de los 
+datos, lo que se infiere como una dispersión muy alejada de la media.
+
+```{r}
+
+#Test de normalidad
+
+shapiro.test(df$var_8)
+
+```
+
+Nuevamente, vemos como el valor de **p** es menor a 0.05 lo cual nos permite 
+rechazar la hipotesis nula de normalidad. 
+
+```{r}
+#confirmamos con la extracción de los valores:
+
+out <- table(boxplot(df$var_8)$out)
+
+length(out)
+
+```
+
+Es importante descatacar como en este caso los valores atípicos están 
+muy por encima del promedio hasta ahora, siendo en este caso de 34.
+
+```{r}
+
+gra_cualitativa_obj(df, df$var_8, df$var_Obj, "var_8")
+
+```
+
+La tendencia de valores atípicos o outliers muestran una mayor aparición 
+en la no aprobación del credito. 
+
+### 3.2.4. var_11
+
+```{r}
+
+graf_box(df, df$var_11, "var_11")
+med_tabla(df$var_11)
+hist_cortes(df$var_11,"var_11")
+gra_cualitativa_curva(df, df$var_11, "var_11")
+
+```
+
+Esta variable es importante destacar la asimetría y la gran dispersión de los datos, 
+teniendo una curtosis de 50.225
+
+```{r}
+
+summary(df$var_11)
+
+```
+
+Los valores atípicos están muy por encima del tercer cuártil, viendo como el 
+valor máximo está en 64 puntos por encima.
+
+```{r}
+
+#Vemos los valores atípicos:
+
+out <- table(boxplot(df$var_11)$out)
+
+out
+
+```
+
+Notamos la gran cantidad de outliers y su dispersión. 
+
+```{r}
+
+#Test de normalidad
+
+shapiro.test(df$var_11)
+
+```
+
+Era de esperarse la no normalidad en la distribución de los datos de esta variable. 
+Procedemos a ver su posible influencia sobre la variable objetivo
+
+```{r}
+
+gra_cualitativa_obj(df, df$var_11, df$var_Obj, "var_11")
+
+```
+
+Aún con la gran cantidad de valores atípicos, esta variable parece tener influencia
+sobre la variable objetivo, ya que la aprobación del crédito parece 
+estar relacionada con sus valores.
+
+### 3.2.5. var_15
+
+```{r}
+
+graf_box(df, df$var_15, "var_15")
+med_tabla(df$var_15)
+
+
+```
+
+```{r}
+
+#Vemos los valores atípicos:
+
+out <- table(boxplot(df$var_15)$out)
+
+length(out)
+
+```
+
+```{r}
+
+out
+
+```
+
+Hay una gran cantidad de outliers (más de 80 valores) y su dispersión es alta. 
+
+```{r}
+
+#Test de normalidad
+
+shapiro.test(df$var_15)
+
+```
+
+```{r}
+
+gra_cualitativa_obj(df, df$var_15, df$var_Obj, "var_15") + scale_y_log10() 
+
+```
+
+La **var_15** presenta una gran cantidad de valores atípicos muy por encima 
+de su media, el valor máximo está en los 100.000 mientras el minimo está en 
+0 mientras que su media está en 1.000. 
+
+No hay normalidad en su distribución, además de así afirmarlo el correspondiente
+Test de Shapiro. 
+
+Sin embargo, esta variable sí parece tener influencia sobre la variable objetivo.
+
+## 3.3. Correlacion
+
+```{r}
+
+#Se procede a realizar un test de correlación entre las variables numéricas, 
+## al todas tener una distribución no normal o no paramétrica, 
+## se recomienda usar el test de correlación con el método de Spearman.
+
+round(cor(df[num], method = "spearman"), 5) %>%
+  kbl() %>%
+  kable_styling()
+
+```
+
+**Nota: **
+
+Vemos que ninguna de las variables tienen un valor superior de **0.8** que
+consideraríamos límite para considerar presencia de multicolinealidad entre
+dos variables.
+
+Se recomienda usar el método Spearman para variables no paramétricas debido 
+a que presenta mayor sensibilidad.
+
+#Fuente: https://www.scielo.sa.cr/scielo.php?script=sci_arttext&pid=S0001-60022008000300004
+
+## 3.4. Test de Indenpendencia
+
+Al igual que en el caso de las variables cuantitativas, usamos un test no
+paramétrico para conocer la posible dependencia entre las variables cualitativas 
+y la variable objetivo, pero en este caso esta elección se debe a la no normalidad
+de la distribución de los datos de estas variables.
+
+En este caso propondremos el Test de Wilconxon.
+
+Planteamos en este caso lo siguiente: 
+H0 = las variables son dependientes
+H1 = las variables muestran independencia
+
+```{r}
+
+sapply(df[num], function(x) round(wilcox.test(x ~df$var_Obj)$p.value))
+
+```
+
+**Nota: **
+
+Observamos que ninguno de los resultados nos permite no 
+rechazar la dependencia de las variables, ya que no sobrepasan el valor
+límite de p de **0.05**, asumimos por tanto la independencia de las cinco variables.
+
+Sin embargo, las **var_11** y **var_15** parecían tener mayor relación 
+con la variable objetivo en sus respectivas gráficas. 
+
+Los valores atípicos tan dispares en estas dos variabes pueden afectar el
+resultado de este test.
+
+**Notas generales: **
+
+Entre las variables cuantitativas no se ve ningún tipo de colinealidad, ya que ninguna
+sobrepasa el 0.8 en el test para considerarlas colineales como comentamos en su respectiva nota;
+basados en este punto se recomendaría no eliminar ninguna de estas variables del modelo.
+
+Las variables cuantitativas que parecen más influyentes 
+son **var_2**, **var_11** y **var_15** ya que en los boxplot se 
+ve como pueden influir entre aprobado y no aprobado, como es el caso de la 
+**var_15**, aunque hay bastantes datos atípicos en la clase **aprobado**. 
+
+Me gustaría aclarar en este punto la decisión de no realizar ningún tipo de acción sobre 
+los valores atípicos de las variables cuantitativas. Es difícil tomar una decisión sobre
+la eliminación de valores atípicos cuando se desconoce el origen de cada variable, 
+ya que no es igual aceptar un sueldo muy alto (en comparación con el resto) 
+en la aprobación de un crédito a un índice de crédito anormal o incluso corregir una edad
+de 98 u 8 años (de darse el caso) ya que esos valores podrían considerarse anormales y pudieran 
+ser corregidos con su eliminación e imputación de medias. 
+
+Por tanto, ninguno de los valores atípicos son corregidos por desconocer su origen 
+y finalidad, y evitamos de realizar cambios por decisiones erradas que distorsionen el modelo. 
+
+**Conclusiones generales:**
+
+Las variables que más se recomendarían usar para el modelo serían las  
+**var_2**, **var_6**, **var_7**, **var_9**, **var_10** ,**var_11** y **var_15**.
+
+Aunque los modelos Ridge y Lasso se caracterizan por penalizar los coeficientes de las 
+variables hasta poder entenderse que Lasso hace una **selección** de estas,
+podemos realizar un STEP para conocer cuáles se ajustan mejor en una Regresión Logística no restringida.
+
+## Selección de variables (Stepwise)
+
+```{r, warning=FALSE}
+
+#EL modelo stepwise hace uso de dos regresiones, para comparar luego entre un modelo 
+## con regresión compustos por todas las variables "fit1" y otro con la variable objetivo
+## contra sí misma. Estos nos permitiá asentar los límites de la función STEP, 
+## que es la encargada de realizar la selección de los mejores AIC a través del 
+## modelo "stepwise".
+
+fit1 <- glm(var_Obj~., data=df, family=binomial)
+fit0 <- glm(var_Obj~1, data=df, family=binomial)
+
+#La función realiza una selección de las varibles con los mejores AIC, en este caso
+## solo realizamos la selección en una sola dirección, hacia adelante. 
+
+step <-stepAIC(fit0, direction = "forward", scope=list(upper=fit1,lower=fit0))
+ 
+```
+
+**Nota: **
+
+Vemos como nuestra elección inicial para las variables se acercan bastante 
+a la realidad de del método Step, teniendo como modelo más adecuado el compuesto 
+por las variables **var_9**, **var_11**, **var_15**, **var_6**, **var_13**,
+**var_4** y **var_10**. 
+
+# 4. Rregresion Logística (Ridge y Lasso)
+
+Aunque hemos visto cuales variables parecen ser las más adecuadas para la creación de un modelo, 
+nos remitimos a los modelos restringidos de Ridge y Lasso; los cuales introducen penalizaciones
+sobre los coeficientes hasta poder llegar a restringirlos a **0**, esto se puede entender
+que si un coeficiente se iguala a **0** sería parecido a descartar una variable. 
+
+Aunque ambos modelos pudieran ser similares, el modelo de **Rigde** regulariza constantemente
+el coeficiente, sin llegar a **0** nunca; es decir, este modelo penaliza la obtención de valor, pero sin 
+descartar la variable.
+
+Esta es la diferencia con el modelo de **Lasso**, de igual manera este penaliza la obtención
+de valor de los coeficientes, pero los coeficientes con menor peso en la regresión son descartados
+con la asignación de valor nulo.
+
+En este apartado se compararán ambos modelos y el que tenga mayor valor de AUC **area under the curve**, 
+o lo que es igual, el grado de sensibilidad del modelo: la posible capacidad de 
+que un modelo u otro pueda distinguir mejor entre las clases a clasificar.
+
+Un paso importante es la normalización o ajuste de los datos. Hemos visto la cantidad 
+de medidas diferentes de las variables que ocasionarían ruido a nuestro modelo; esto es lo que haremos a continuación.
+
+## 4.1. Normalizacion del dataframe
+
+Nos referimos a normalización al ajuste o igualación de las escalas en las cuales
+fueron medidos los diferentes valores o variables. 
+
+```{r}
+#Usamos "scale" con los parámetros por defecto. Solo se normalizarán
+##  las variables cuantitativas, separándolas en este caso en otro dataframe y uniéndolo luego con 
+##  el resto de las variables cualitativas.
+
+df_normalizado <- scale(df[num], center= TRUE, scale=TRUE)
+
+df_final <- cbind(df_normalizado, df[cat], var_Obj = df$var_Obj)
+
+view(df_final)
+
+##Fuente: https://rpubs.com/ydmarinb/429761
+
+```
+
+## 4.2. Division del dataframe en Train y Test
+
+Siguiendo los puntos del enunciado de esta práctica: 
+**Divide el dataset tomando las primeras 589 instancias como train y las últimas 100 como test**.
+Este paso es importante para comprobar el desempeño de nuestro modelo final.
+
+```{r}
+
+x <- data.matrix(subset(df_final, select= - var_Obj))
+y <- as.double(as.matrix(df_final$var_Obj))
+
+x_train <- x[1:588,]
+y_train <- y[1:588]
+x_test  <- x[589:689,]
+y_test  <- y[589:689]
+
+```
+
+## 4.3 Entrenamiento de modelos
+
+El siguiente punto es el entrenamiento de nuestros modelos, según el **cuarto punto** del enunciado:
+**Entrena un modelo de regresión logística con regularización Ridge y Lasso en train seleccionando el que mejor AUC tenga. Da las métricas en test**.
+
+En este apartado se harán dos pasos diferentes, por un lado
+se entrenarán los dos modelos por separado (**Rigde** y **Lasso**), con la funcion 
+**cv**, la cual se encargará de realizar 
+una validación cruzada para obtener los diferentes valores de Lambda. 
+
+Debemos destacar la importancia de este parámetro, 
+ya que es el encargado de minimizar el error del modelo, 
+una medida adecuada de Lambda permite un modelo exacto; a medida que esta incrementa 
+los coeficientes se acercan a cero. 
+
+Es decir, Lambda es el valor por el cual el modelo penaliza. 
+Un Lambda igual a cero no regulariza los coeficientes. 
+
+```{r}
+ 
+set.seed(1) #se establece un número fijo en caso de querer replicar este ejercicio
+
+#Entrenamiento de modelo
+
+#Para conocer la medida de AUC es importante notificarlo en el parámetro "type.measure", ya que por defecto este valor es MSE. El resto de los parámetros se 
+## dejan por defecto, incluido el 10 en la cantidad de n-fold de la validación cruzada.
+#El alpha "0" o "1" es el otro parámetro a cambiar, el cual se refiere al tipo de regularización a trabajar. 
+
+ridge <- cv.glmnet(x_train, y_train, family='binomial', parallel=TRUE, standardize=TRUE, alpha=0, type.measure = "auc")
+
+lasso <- cv.glmnet(x_train, y_train, family='binomial', parallel=TRUE, standardize=TRUE, alpha=1, type.measure = "auc")
+
+```
+
+
+```{r}
+
+#Una vez entrenados los modelos necesitamos conocer tanto su AUC, como el 
+## error para el máximo AUC  
+
+cvsd_rigde <- round(ridge$cvsd[which.max(ridge$cvm)], 3)
+cvsd_lasso <- round(lasso$cvsd[which.max(lasso$cvm)], 3)
+auc_rigde <- round(max(ridge$cvm), 3) 
+auc_lasso <- round(max(lasso$cvm), 3)
+
+Modelos <- c("Mejor Valor de AUC", "Error Estándar Estimado ")
+Ridge <- c(auc_rigde, cvsd_rigde) 
+LASSO <- c(auc_lasso, cvsd_lasso)
+
+val <- data.frame(Modelos, Ridge, LASSO)
+
+val %>%
+  kbl()%>%
+  kable_minimal()
+
+```
+
+```{r}
+#vemos los coeficientes de los modelos
+
+round(coef(lasso), 3)
+
+```
+
+```{r}
+
+round(coef(ridge), 3)
+
+```
+
+**Nota:** 
+
+Los valores de Lasso son ligeramente mejores que Ridge, siguiendo el principio de la navaja de Ockham, 
+en donde la explicación más sencilla tiende a ser la más probable, "aunque no necesariamente la verdadera". 
+
+También es importante resaltar que según comentamos al inicio de este apartado, el modelo 
+de Lasso restringe o **descarta** las variables que menos aporten al modelo; esto combinado con 
+la realidad de las variables de este dataset de contenido con valores extremos
+y distribución muy dispersa, es preferible optar por el modelo de Lasso.
+
+El modelo se compondrá de cinco variables. Esta simplicidad nos permitirá tener resultados con menos ruidos. 
+
+```{r}
+
+#Graficamos a manera complementaria el AUC del modelo; en donde vemos como 
+## el modelo se estabiliza una vez reducidos su componentes a cinco variables 
+
+plot(lasso)
+
+```
+
+## 4.3. Predicción sobre Test
+
+```{r}
+
+#Siguiendo las pautas de la práctica, generamos las métricas con el test. 
+## Es importante destacar que usamos el mejor valor de Lambda para el modelo con la función "lasso$lambda.min";
+## este valor es de "0.005266423". 
+
+#Generamos los datos dentro de la variable "y_pred" con formato numérico. 
+
+y_pred <- as.numeric(predict.glmnet(lasso$glmnet.fit, newx=x_test, s=lasso$lambda.min) >.3)
+
+#Para obtener los datos del modelos generamos una matriz de confusión sobre 
+## los valors predichos y los separados en test
+
+#Se convocan todas las posibles métricas con el parámetro "everything" de la función
+
+Matriz_Confusion <- confusionMatrix(as.factor(y_test), as.factor(y_pred), mode="everything") 
+
+Matriz_Confusion
+
+```
+
+### Nota 
+
+Vemos como la precisión global del modelo tiene un buen valor cercano de **0.93**, 
+queriendo decir que hay una gran porcentaje de valores positivos que fueron 
+correctamente clasificados. 
+
+## 4.4. Log Odds
+
+**Odds ratio** se entiende como la probabilidad con la que 
+cada uno de las variables puedan incidir en la variable objetivo. 
+
+Danto respuesta al punto cinco del enunciado: **aporta los log odds de las variables predictoras sobre la variable objetivo**.
+
+```{r}
+
+#Se calculan los Logs Odds a partir de los coeficientes del modelo. 
+## Vemos nuevamente los coeficientes de modelo restringido de Lasso.
+
+coef(lasso)
+
+```
+
+Notamos como hay variables que han sido descartadas. Si sabemos que 
+cada valor representa el coeficiente con el cual se variará por unidad, aumentaremos 
+de manera exponencial estos factores para conocer la influencia de cada variable sobre la
+probabilidad de que la variable objetivo sea positiva o **0**; conociendo asi los Log Odds. 
+
+También podemos ver que las variables no anuladas son **var_4**, **var_11**, **var_15**, **var_9** y **var_10**.
+
+```{r}
+
+#Procemos a calcular el Log Odds entendiendo que 
+## cada valor elevado a al coeficiente demostraría 
+## la influencia de cada factor en el modelo.
+
+exp(coef(lasso))
+
+```
+
+### Conclusiones 
+
+Podemos obervar como cada coeficiente de las variables anuladas o 
+valor **0** usada como exponente, nos da como valor *1.000*; lo cual resalta la obviedad
+que un posible aumento de ese valor, representaría ningún cambio salvo su propio aumento. 
+
+Las variables **var_11** y  **var_15** restan posibilidad
+de aprobarse el crédito en diferentes porcentajes, qué varían en un 90%, esto contrastando
+con el test que negaba la relación de dependencia.
+
+Las variables **var_9**y **var_10** restan hasta medio punto de probabilidad  
+de ser aprobado el crédito respecto a la no presencia de estas variables. A diferencia
+de la **var_4** que aporta cuatro puntos
+
+# 5. Rentabilidad del modelo
+
+A manera de cierre, damos respuesta al último apartado de este caso práctico: 
+
+Si por cada verdadero positivo ganamos 100 euros y por cada falso positivo perdemos 20 euros: 
+**¿Qué valor monetario generará el modelo teniendo en cuenta la matriz de confusión del modelo con mayor AUC 
+(con las métricas en test)?**
+
+```{r}
+
+#Según Selva Prabhakaran en la web r-statistics.co, se entiende
+## verdadero positivo el valor de "Sentivity" dentro de la matriz de confusión y 
+## falso positivo "Specifity". Calculamos usando esta información. 
+
+#Fuente: http://r-statistics.co/Logistic-Regression-With-R.html
+
+verdadero_positivo <- round(Matriz_Confusion$byClass["Sensitivity"], 3)
+falso_positivo     <- round(Matriz_Confusion$byClass["Specificity"], 3)
+
+rentabilidad = verdadero_positivo * 100 - falso_positivo * 20
+
+cat("\n", "Se considerararía que 
+    la rentabilidad del modelo es: ", round(as.numeric(rentabilidad), 3))
+
+```
